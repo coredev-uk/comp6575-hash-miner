@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
-import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
+import { createInterface, moveCursor } from 'node:readline';
 import os from 'os';
 import winston from 'winston';
-import { createInterface, moveCursor } from 'node:readline';
+import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 // ----------------- CONFIGURATION -----------------
 const PSEUDONYM = 'lunar';
-const THREAD_COUNT = -1; // Set to undefined to use all available cores
-const MAX_NONCE = 10000000000n;
+const THREAD_COUNT = -1; // Set to negative to take away from the number of cores available or positive to add or 0 to use all cores
+const MAX_NONCE = 100000000000n;
 const REQUIRED_DIFFICULTY = 45;
 const PREVIOUS_HASH: Hash = {
     nonce: 26975069n,
@@ -227,65 +227,77 @@ function createWorker(params: WorkerData): Worker {
     return worker;
 }
 
-
+/**
+ * Main thread entry point
+ */
 async function main() {
-    if (isMainThread) {
-        const numWorkers = THREAD_COUNT > 0 ? THREAD_COUNT : os.cpus().length - THREAD_COUNT;
-        const baseChunkSize = MAX_NONCE / BigInt(numWorkers);
-        const minChunkSize = 1000n;
-        const maxChunkSize = baseChunkSize < MAX_NONCE ? baseChunkSize : MAX_NONCE;
-        const chunkSize = baseChunkSize < minChunkSize ? minChunkSize : (baseChunkSize > maxChunkSize ? maxChunkSize : baseChunkSize);
-        const remainder = MAX_NONCE % BigInt(numWorkers);
+    const numWorkers = THREAD_COUNT > 0 ? THREAD_COUNT : os.cpus().length + THREAD_COUNT;
+    const baseChunkSize = MAX_NONCE / BigInt(numWorkers);
+    const minChunkSize = 1000n;
+    const maxChunkSize = baseChunkSize < MAX_NONCE ? baseChunkSize : MAX_NONCE;
+    const chunkSize = baseChunkSize < minChunkSize ? minChunkSize : (baseChunkSize > maxChunkSize ? maxChunkSize : baseChunkSize);
+    const remainder = MAX_NONCE % BigInt(numWorkers);
 
-        for (let i = 0; i < numWorkers; i++) {
-            const start = BigInt(i) * chunkSize;
-            const end = start + chunkSize + (i === numWorkers - 1 ? remainder : 0n);
-            const worker = createWorker({
-                previousHash: PREVIOUS_HASH,
-                difficulty: REQUIRED_DIFFICULTY,
-                chunkStart: start,
-                chunkEnd: end,
-                id: i
-            });
-            workerList.push(worker);
-        }
-
-        logger.info('Main thread running');
-        logger.info(`Using ${numWorkers} workers with chunk size ${chunkSize} and remainder ${remainder}`);
-
-        const time = performance.now();
-        await Promise.all(workerList.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
-        rl.close();
-        console.log('\n');
-        logger.info(`Completed in ${((performance.now() - time) / 1000 / 60).toFixed(2)}m`);
-        const bestHash = Object.values(workerSummaries).reduce((prev, current) => {
-            return current.difficulty > prev.difficulty ? current : prev;
+    for (let i = 0; i < numWorkers; i++) {
+        const start = BigInt(i) * chunkSize;
+        const end = start + chunkSize + (i === numWorkers - 1 ? remainder : 0n);
+        const worker = createWorker({
+            previousHash: PREVIOUS_HASH,
+            difficulty: REQUIRED_DIFFICULTY,
+            chunkStart: start,
+            chunkEnd: end,
+            id: i
         });
-        logger.info(`Best nonce: ${Number(bestHash.nonce)} with difficulty ${bestHash.difficulty}`);
-    } else {
-        // Worker thread
-        const worker = workerData as WorkerData;
-        const chunkSubSize = (worker.chunkEnd - worker.chunkStart) / 10000n;
-
-        parentPort?.postMessage({
-            event: 'STARTED',
-            workerId: worker.id,
-            text: `Worker ${worker.id} started with range ${worker.chunkStart} to ${worker.chunkEnd}`
-        } as WorkerMessage);
-
-        const pointers = await findHashInRange(worker, chunkSubSize);
-
-        const hash = pointers.reduce((prev, current) => {
-            return current.difficulty > prev.difficulty ? current : prev;
-        });
-
-        parentPort?.postMessage({
-            event: 'FINISHED',
-            workerId: worker.id,
-            text: `Worker ${worker.id} finished`,
-            data: hash
-        } as WorkerMessage);
+        workerList.push(worker);
     }
+
+    logger.info('Main thread running');
+    logger.info(`Using ${numWorkers} workers with chunk size ${chunkSize} and remainder ${remainder}`);
+    const time = performance.now();
+    await Promise.all(workerList.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
+    rl.close();
+    console.log('\n');
+    logger.info(`Completed in ${((performance.now() - time) / 1000 / 60).toFixed(2)}m`);
+    const bestHash = Object.values(workerSummaries).reduce((prev, current) => {
+        return current.difficulty > prev.difficulty ? current : prev;
+    });
+    logger.info(`Best nonce: ${Number(bestHash.nonce)} with difficulty ${bestHash.difficulty}`);
 }
 
-main().catch(err => logger.error(err));
+/**
+ * Worker thread entry point
+ */
+async function worker() {
+    // Worker thread
+    const worker = workerData as WorkerData;
+    const chunkSubSize = (worker.chunkEnd - worker.chunkStart) / 10000n;
+
+    parentPort?.postMessage({
+        event: 'STARTED',
+        workerId: worker.id,
+        text: `Worker ${worker.id} started with range ${worker.chunkStart} to ${worker.chunkEnd}`
+    } as WorkerMessage);
+
+    const pointers = await findHashInRange(worker, chunkSubSize);
+
+    const hash = pointers.reduce((prev, current) => {
+        return current.difficulty > prev.difficulty ? current : prev;
+    });
+
+    parentPort?.postMessage({
+        event: 'FINISHED',
+        workerId: worker.id,
+        text: `Worker ${worker.id} finished`,
+        data: hash
+    } as WorkerMessage);
+}
+
+if (isMainThread) {
+    main().catch((err) => {
+        logger.error('Main thread error:', err);
+    });
+} else {
+    worker().catch((err) => {
+        throw err;
+    });
+}
