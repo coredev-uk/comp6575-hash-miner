@@ -4,7 +4,7 @@ import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 const pseudonym = 'lunar';
 
 type HashPointer = {
-    nonce: number,
+    nonce: bigint,
     hash: string,
     difficulty: number
 }
@@ -12,7 +12,7 @@ type HashPointer = {
 /**
  * Helper function to create a sha256 hash
  */
-function createSha(previousHash: string, nonce: number = 0): string {
+function createSha(previousHash: string, nonce: bigint = 0n): string {
     return createHash('sha256').update(`${previousHash}${pseudonym}${nonce}`).digest('hex');
 }
 
@@ -22,7 +22,7 @@ function createSha(previousHash: string, nonce: number = 0): string {
  * @param pointer The pointer to check against
  * @returns The difficulty of the nonce
  */
-function getNonceDifficulty(nonce: number, prevPointer: HashPointer): Promise<HashPointer> | HashPointer {
+function getNonceDifficulty(nonce: bigint, prevPointer: HashPointer): HashPointer {
     const hex = createSha(prevPointer.hash, nonce);
 
     // Convert the hex to binary with leading zeros
@@ -53,17 +53,17 @@ function printProgress(current: number, total: number) {
  * @param d The difficulty level
  */
 async function findHash(prev: HashPointer, d: number) {
-    const chunkSize = 100000;
-    const maxSize = 100000000;
+    const chunkSize = 100000n;
+    const maxSize = 100000000n;
     const callList: any[] = [];
     let found = false;
     let current: HashPointer = prev;
-    let done = 0;
+    let done = 0n;
 
-    const mineChunk = async (start: number, end: number) => {
+    const mineChunk = async (start: bigint, end: bigint) => {
         for (let i = start; i < end; i++) {
             if (found) return;
-            const curr = await getNonceDifficulty(i, prev)
+            const curr = getNonceDifficulty(i, prev)
             if (curr.difficulty > current.difficulty) {
                 current = curr;
             }
@@ -73,16 +73,18 @@ async function findHash(prev: HashPointer, d: number) {
                 return;
             }
             done++;
-            parentPort?.postMessage({
-                type: 'progress',
-                current: done,
-                total: maxSize
-            });
+            if (done % 10000n === 0n) {
+                parentPort?.postMessage({
+                    type: 'progress',
+                    current: Number(done),
+                    total: Number(maxSize)
+                });
+            }
         }
     }
 
     // chunk for every chunkSize upto maxSize
-    for (let i = 0; i < maxSize; i += chunkSize) {
+    for (let i = 0n; i < maxSize; i += chunkSize) {
         callList.push(mineChunk(i, i + chunkSize))
     }
 
@@ -107,7 +109,7 @@ async function findHash(prev: HashPointer, d: number) {
 async function main() {
 
     const prev: HashPointer = {
-        nonce: 26975069,
+        nonce: 26975069n,
         hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
         difficulty: 25
     }
