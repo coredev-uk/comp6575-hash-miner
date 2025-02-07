@@ -5,8 +5,8 @@ import winston from 'winston';
 
 // ----------------- CONFIGURATION -----------------
 const PSEUDONYM = 'lunar';
-const THREAD_COUNT = undefined; // Set to undefined to use all available cores
-const MAX_NONCE = 1000000000n;
+const THREAD_COUNT = -1; // Set to undefined to use all available cores
+const MAX_NONCE = 10000000000n;
 const REQUIRED_DIFFICULTY = 20;
 const PREVIOUS_HASH: Hash = {
 	nonce: 26975069n,
@@ -86,7 +86,7 @@ function createSha(previousHash: string, nonce: bigint = 0n): string {
  */
 function getNonceDifficulty(nonce: bigint, prevPointer: Hash, buffer: { binary: Uint8Array }): Hash {
     const hex = createSha(prevPointer.hash, nonce);
-    const binary = new Uint8Array(hex.length * 4);
+    const binary = buffer.binary;
 
     for (let i = 0; i < hex.length; i++) {
         const bin = parseInt(hex[i], 16).toString(2).padStart(4, '0');
@@ -94,8 +94,6 @@ function getNonceDifficulty(nonce: bigint, prevPointer: Hash, buffer: { binary: 
             binary[i * 4 + j] = bin[j] === '0' ? 0 : 1;
         }
     }
-
-    buffer.binary = binary;
 
     const leadingZeros = binary.findIndex(bit => bit !== 0);
 
@@ -134,9 +132,10 @@ function printProgress(workerId: number, data: { completed: number; start: numbe
  * @param worker The worker data
  * @param buffer The buffer to store the binary data
  */
-async function findHashInRange(worker: WorkerData, buffer: { binary: Uint8Array }): Promise<Hash[]> {
+async function findHashInRange(worker: WorkerData, chunkSubSize: bigint, buffer: { binary: Uint8Array }): Promise<Hash[]> {
     const callList: Promise<Hash>[] = [];
-	const chunkSize = worker.chunkEnd - worker.chunkStart;
+    const dataSize = worker.chunkEnd - worker.chunkStart;
+    const progressUpdateInterval = dataSize / 10n;
     let current: Hash = {
         nonce: 0n,
         hash: '',
@@ -170,7 +169,7 @@ async function findHashInRange(worker: WorkerData, buffer: { binary: Uint8Array 
 
                 done++;
                 // Update progress every 10% of the range
-                if (done % (chunkSize / 10n) === 0n) {
+                if (done % progressUpdateInterval === 0n) {
                     parentPort?.postMessage({
                         type: 'progress',
                         workerId: worker.id,
@@ -190,8 +189,8 @@ async function findHashInRange(worker: WorkerData, buffer: { binary: Uint8Array 
     }
 
     // chunk for every chunkSize upto maxSize
-    for (let i = worker.chunkStart; i < worker.chunkEnd; i += chunkSize) {
-        callList.push(mineChunk(i, i + chunkSize));
+    for (let i = worker.chunkStart; i < worker.chunkEnd; i += chunkSubSize) {
+        callList.push(mineChunk(i, i + chunkSubSize));
     }
 
     return Promise.all(callList);
@@ -251,10 +250,10 @@ async function main() {
     if (isMainThread) {
         logger.info('Main thread running');
 
-        const numWorkers = THREAD_COUNT || os.cpus().length;
+        const numWorkers = THREAD_COUNT > 0 ? THREAD_COUNT : os.cpus().length - THREAD_COUNT;
         const baseChunkSize = MAX_NONCE / BigInt(numWorkers);
         const minChunkSize = 1000n;
-        const maxChunkSize = 1000000n;
+        const maxChunkSize = baseChunkSize < MAX_NONCE ? baseChunkSize : MAX_NONCE;
         const chunkSize = baseChunkSize < minChunkSize ? minChunkSize : (baseChunkSize > maxChunkSize ? maxChunkSize : baseChunkSize);
         const remainder = MAX_NONCE % BigInt(numWorkers);
 
@@ -262,12 +261,12 @@ async function main() {
             const start = BigInt(i) * chunkSize;
             const end = start + chunkSize + (i === numWorkers - 1 ? remainder : 0n);
             const worker = createWorker({
-				previousHash: PREVIOUS_HASH,
-				difficulty: REQUIRED_DIFFICULTY,
-				chunkStart: start,
-				chunkEnd: end,
-				id: i
-			});
+                previousHash: PREVIOUS_HASH,
+                difficulty: REQUIRED_DIFFICULTY,
+                chunkStart: start,
+                chunkEnd: end,
+                id: i
+            });
             workerList.push(worker);
         }
 
@@ -280,12 +279,13 @@ async function main() {
         logger.info(JSON.stringify(workerSummaries, null, 2));
         logger.info(`Time taken: ${((performance.now() - time) / 1000 / 60).toFixed(2)}m`);
     } else {
-		// Worker thread
+        // Worker thread
         const worker = workerData as WorkerData;
+		const chunkSubSize = (worker.chunkEnd - worker.chunkStart) / 10000n;
 
         logger.info(`Worker ${worker.id} started with range ${worker.chunkStart} to ${worker.chunkEnd}`);
 
-        const pointers = await findHashInRange(worker, { binary: new Uint8Array() });
+        const pointers = await findHashInRange(worker, chunkSubSize, { binary: new Uint8Array() });
 
         const hash = pointers.reduce((prev, current) => {
             return current.difficulty > prev.difficulty ? current : prev;
