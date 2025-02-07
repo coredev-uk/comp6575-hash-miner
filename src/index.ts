@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Worker, isMainThread, parentPort } from 'worker_threads';
+import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 
 const pseudonym = 'lunar';
 
@@ -118,7 +118,7 @@ async function main() {
         console.log('Main thread running');
 
         const worker = new Worker(new URL(import.meta.url), {
-            workerData: { num: 40 }
+            workerData: { prev, d }
         });
 
         worker.on('message', (msg) => {
@@ -136,6 +136,7 @@ async function main() {
         });
 
     } else {
+        const { prev, d } = workerData;
         const hash = await findHash(prev, d);
 
         parentPort?.postMessage({
