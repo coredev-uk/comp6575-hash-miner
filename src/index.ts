@@ -1,0 +1,151 @@
+import { createHash } from 'node:crypto';
+import { Worker, isMainThread, parentPort } from 'worker_threads';
+
+const pseudonym = 'lunar';
+
+type HashPointer = {
+    nonce: number,
+    hash: string,
+    difficulty: number
+}
+
+/**
+ * Helper function to create a sha256 hash
+ */
+function createSha(previousHash: string, nonce: number = 0): string {
+    return createHash('sha256').update(`${previousHash}${pseudonym}${nonce}`).digest('hex');
+}
+
+/**
+ * Get the difficulty of a nonce
+ * @param nonce The nonce to check
+ * @param pointer The pointer to check against
+ * @returns The difficulty of the nonce
+ */
+function getNonceDifficulty(nonce: number, prevPointer: HashPointer): Promise<HashPointer> | HashPointer {
+    const hex = createSha(prevPointer.hash, nonce);
+
+    // Convert the hex to binary with leading zeros
+    const binary = hex.split('').map((char) => {
+        return parseInt(char, 16).toString(2).padStart(4, '0');
+    }).join('');
+
+    // Count the number of leading zeros
+    const leadingZeros = binary.match(/^0*/)?.[0].length;
+
+    return {
+        nonce,
+        hash: hex,
+        difficulty: leadingZeros || 0
+    }
+}
+
+function printProgress(current: number, total: number) {
+    process.stdout.clearLine(1);
+    process.stdout.cursorTo(0);
+    process.stdout.write(`Progress: ${current}/${total} (${(current / total * 100).toFixed(2)}%)`);
+}
+
+/**
+ * Asynchronously find a hash with a certain difficulty level
+ * Once a hash is found, the promise should resolve with the hash pointer
+ * @param prev The previous hash pointer
+ * @param d The difficulty level
+ */
+async function findHash(prev: HashPointer, d: number) {
+    const chunkSize = 100000;
+    const maxSize = 100000000;
+    const callList: any[] = [];
+    let found = false;
+    let current: HashPointer = prev;
+    let done = 0;
+
+    const mineChunk = async (start: number, end: number) => {
+        for (let i = start; i < end; i++) {
+            if (found) return;
+            const curr = await getNonceDifficulty(i, prev)
+            if (curr.difficulty > current.difficulty) {
+                current = curr;
+            }
+
+            if (current.difficulty >= d) {
+                found = true;
+                return;
+            }
+            done++;
+            parentPort?.postMessage({
+                type: 'progress',
+                current: done,
+                total: maxSize
+            });
+        }
+    }
+
+    // chunk for every chunkSize upto maxSize
+    for (let i = 0; i < maxSize; i += chunkSize) {
+        callList.push(mineChunk(i, i + chunkSize))
+    }
+
+    parentPort?.postMessage({
+        type: 'event',
+        event: 'STARTED',
+        data: {
+            'Requested Difficulty': d,
+            'Call Count': callList.length,
+            'Chunk Size': chunkSize,
+            'Max Size': maxSize
+        }
+    });
+
+    await Promise.all(callList);
+    return current;
+}
+
+/**
+ * Find a hash with a certain difficulty level
+ */
+async function main() {
+
+    const prev: HashPointer = {
+        nonce: 26975069,
+        hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
+        difficulty: 25
+    }
+
+    const d = 45;
+
+    if (isMainThread) {
+        console.log('Main thread running');
+
+        const worker = new Worker(new URL(import.meta.url), {
+            workerData: { num: 40 }
+        });
+
+        worker.on('message', (msg) => {
+            if (msg.type === 'progress') {
+                printProgress(msg.current, msg.total);
+            } else if (msg.type === 'event') {
+                console.log(`------ ${msg.event} ------`);
+                if (msg.text) console.log(msg.text);
+                if (msg.data) console.table(msg.data);
+            }
+        });
+
+        worker.on('error', (err) => {
+            console.error('Worker error:', err);
+        });
+
+    } else {
+        const hash = await findHash(prev, d);
+
+        parentPort?.postMessage({
+            type: 'event',
+            event: 'FINISHED',
+            text: 'Best hash found:',
+            result: hash
+        });
+    }
+
+}
+
+await main()
