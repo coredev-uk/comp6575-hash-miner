@@ -57,10 +57,27 @@ function getNonceDifficulty(nonce: bigint, prevPointer: HashPointer): HashPointe
     }
 }
 
-function printProgress(current: number, total: number) {
-    process.stdout.clearLine(1);
-    process.stdout.cursorTo(0);
-    process.stdout.write(`Progress: ${current}/${total} (${(current / total * 100).toFixed(2)}%)`);
+const workerProgress: { [id: number]: { done: number; start: number; end: number; } } = {};
+
+function printProgress(workerId: number, data: {completed: number; start: number; end: number}) {
+    workerProgress[workerId] = {
+        done: data.completed,
+        start: data.start,
+        end: data.end,
+    };
+
+    const log = Object.keys(workerProgress).map((id) => {
+        const entry = workerProgress[Number(id)];
+        const percent = (entry.done / (entry.end - entry.start)) * 100;
+        return `Worker ${id}: ${percent.toFixed(2)}% (${entry.start + entry.done} / ${entry.end})`;
+    })
+
+    const total = Math.max(...Object.values(workerProgress).map((entry) => entry.end));
+    const completed = Object.values(workerProgress).reduce((prev, entry) => prev + entry.done, 0);
+
+    // Clear the console
+    process.stdout.write('\x1Bc');
+    process.stdout.write(`------------- WORKER PROGRESS -------------\nGlobal Progress: ${(completed / total).toFixed(2)}% \n\n${log.join('\n')}`);
 }
 
 /**
@@ -69,34 +86,47 @@ function printProgress(current: number, total: number) {
  * @param prev The previous hash pointer
  * @param d The difficulty level
  */
-async function findHashInRange(prev: HashPointer, d: number, start: bigint, end: bigint): Promise<HashPointer> {
-    const { chunkSize } = workerData;
-    const callList: Promise<void>[] = [];
-    let found = false;
-    let current: HashPointer = prev;
+async function findHashInRange(prev: HashPointer, d: number, start: bigint, end: bigint, workerId: number, chunkSize: bigint): Promise<HashPointer[]> {
+    const callList: Promise<HashPointer>[] = [];
+    let current: HashPointer = {
+        nonce: 0n,
+        hash: '',
+        difficulty: 0
+    };
     let done = 0n;
 
     const mineChunk = async (chunkStart: bigint, chunkEnd: bigint) => {
         for (let i = chunkStart; i < chunkEnd; i++) {
-            if (found) return;
-            const curr = getNonceDifficulty(i, prev)
-            if (curr.difficulty > current.difficulty) {
-                current = curr;
+            const hash = getNonceDifficulty(i, prev)
+            if (hash.difficulty > current.difficulty) {
+                current = hash;
             }
 
             if (current.difficulty >= d) {
-                found = true;
-                return;
+                parentPort?.postMessage({
+                    type: 'event',
+                    event: 'FOUND',
+                    text: `Worker ${workerId} found a hash with difficulty ${d}`
+                });
+                break;
             }
+
             done++;
             if (done % 100000n === 0n) { // Reduce frequency of progress updates
                 parentPort?.postMessage({
                     type: 'progress',
-                    current: Number(done),
-                    total: Number(end - start)
+                    workerId,
+                    data: {
+                        completed: Number(done),
+                        start: Number(start),
+                        end: Number(end)
+                    }
                 });
             }
         }
+
+
+        return current;
     }
 
     // chunk for every chunkSize upto maxSize
@@ -104,15 +134,13 @@ async function findHashInRange(prev: HashPointer, d: number, start: bigint, end:
         callList.push(mineChunk(i, i + chunkSize))
     }
 
-    await Promise.all(callList);
-    return current;
+    return Promise.all(callList);
 }
 
 /**
  * Find a hash with a certain difficulty level
  */
 async function main() {
-
     const prev: HashPointer = {
         nonce: 26975069n,
         hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
@@ -121,13 +149,15 @@ async function main() {
 
     const d = 45;
 
+    const workerSummaries: { [id: number]: { nonce: number; hash: number; difficulty: number; } } = {};
+
     if (isMainThread) {
         logger.info('Main thread running');
 
         const numWorkers = os.cpus().length; // Use the number of CPU cores
         const workers: Worker[] = [];
         const chunkSize = 100000n;
-        const maxSize = 100000000n;
+        const maxSize = 10000000000n;
         const chunksPerWorker = maxSize / BigInt(numWorkers);
 
         for (let i = 0; i < numWorkers; i++) {
@@ -140,14 +170,29 @@ async function main() {
 
             worker.on('message', (msg) => {
                 if (msg.type === 'progress') {
-                    printProgress(msg.current, Number(maxSize));
+                    printProgress(msg.workerId, msg.data);
                 } else if (msg.type === 'event') {
-                    logger.info(`------ ${msg.event} ------`);
-                    if (msg.text) logger.info(msg.text);
-                    if (msg.data) logger.info(JSON.stringify(msg.data, null, 2));
-                } else if (msg.type === 'result') {
-                    logger.info('Best hash found:', msg.result);
-                    workers.forEach(worker => worker.terminate());
+                    switch (msg.event) {
+
+                        case 'STARTED':
+                            logger.info(msg.text);
+                            break;
+
+                        case 'FINISHED':
+                            workerSummaries[i] = {
+                                nonce: Number(msg.data.nonce),
+                                hash: msg.data.hash,
+                                difficulty: msg.data.difficulty
+                            }
+                            worker.terminate();
+                            break;
+
+                        case 'FOUND':
+                            logger.info(msg.text);
+                            logger.info(JSON.stringify(workerSummaries, null, 2));
+                            workers.forEach((worker) => worker.terminate());
+                            break;
+                    }
                 }
             });
 
@@ -158,10 +203,16 @@ async function main() {
             workers.push(worker);
         }
 
+        const time = performance.now();
+
         await Promise.all(workers.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
 
+        logger.info('All workers finished');
+        logger.info('Worker summaries:');
+        logger.info(JSON.stringify(workerSummaries, null, 2));
+        logger.info(`Time taken: ${performance.now() - time}ms`);
     } else {
-        const { prev, d, start, end, workerId } = workerData;
+        const { prev, d, start, end, workerId, chunkSize } = workerData;
 
         parentPort?.postMessage({
             type: 'event',
@@ -169,11 +220,17 @@ async function main() {
             text: `Worker ${workerId} started with range ${start} to ${end}`,
         });
 
-        const hash = await findHashInRange(prev, d, start, end);
+        const pointers = await findHashInRange(prev, d, start, end, workerId, chunkSize);
+
+        const hash = pointers.reduce((prev, current) => {
+            return current.difficulty > prev.difficulty ? current : prev;
+        });
 
         parentPort?.postMessage({
-            type: 'result',
-            result: hash
+            type: 'event',
+            event: 'FINISHED',
+            text: `Worker ${workerId} finished`,
+            data: hash
         });
     }
 
