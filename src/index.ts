@@ -230,8 +230,6 @@ function createWorker(params: WorkerData): Worker {
 
 async function main() {
     if (isMainThread) {
-        logger.info('Main thread running');
-
         const numWorkers = THREAD_COUNT > 0 ? THREAD_COUNT : os.cpus().length - THREAD_COUNT;
         const baseChunkSize = MAX_NONCE / BigInt(numWorkers);
         const minChunkSize = 1000n;
@@ -251,6 +249,9 @@ async function main() {
             });
             workerList.push(worker);
         }
+
+        logger.info('Main thread running');
+        logger.info(`Using ${numWorkers} workers with chunk size ${chunkSize} and remainder ${remainder}`);
 
         const time = performance.now();
         await Promise.all(workerList.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
