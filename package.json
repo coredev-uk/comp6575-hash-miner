@@ -1,11 +1,12 @@
 {
-  "name": "BlockchainProgram",
+  "name": "comp6575-hash-miner",
   "version": "1.0.0",
   "description": "",
   "main": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "node src/index.ts"
+    "start": "node src/index.ts",
+    "inspector": "node --inspect src/index.ts"
   },
   "keywords": [],
   "author": "",
