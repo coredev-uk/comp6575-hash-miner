@@ -22,7 +22,7 @@ const logger = winston.createLogger({
     ),
     transports: [
         new winston.transports.Console(),
-        new winston.transports.File({ filename: 'hash-miner.log' })
+        new winston.transports.File({ filename: 'hash-miner.log', options: { flags: 'w' } })
     ]
 });
 
@@ -69,16 +69,15 @@ function printProgress(current: number, total: number) {
  * @param prev The previous hash pointer
  * @param d The difficulty level
  */
-async function findHash(prev: HashPointer, d: number) {
-    const chunkSize = 100000n;
-    const maxSize = 100000000n;
-    const callList: any[] = [];
+async function findHashInRange(prev: HashPointer, d: number, start: bigint, end: bigint): Promise<HashPointer> {
+    const { chunkSize } = workerData;
+    const callList: Promise<void>[] = [];
     let found = false;
     let current: HashPointer = prev;
     let done = 0n;
 
-    const mineChunk = async (start: bigint, end: bigint) => {
-        for (let i = start; i < end; i++) {
+    const mineChunk = async (chunkStart: bigint, chunkEnd: bigint) => {
+        for (let i = chunkStart; i < chunkEnd; i++) {
             if (found) return;
             const curr = getNonceDifficulty(i, prev)
             if (curr.difficulty > current.difficulty) {
@@ -94,27 +93,16 @@ async function findHash(prev: HashPointer, d: number) {
                 parentPort?.postMessage({
                     type: 'progress',
                     current: Number(done),
-                    total: Number(maxSize)
+                    total: Number(end - start)
                 });
             }
         }
     }
 
     // chunk for every chunkSize upto maxSize
-    for (let i = 0n; i < maxSize; i += chunkSize) {
+    for (let i = start; i < end; i += chunkSize) {
         callList.push(mineChunk(i, i + chunkSize))
     }
-
-    parentPort?.postMessage({
-        type: 'event',
-        event: 'STARTED',
-        data: {
-            'Requested Difficulty': d,
-            'Call Count': callList.length,
-            'Chunk Size': chunkSize,
-            'Max Size': maxSize
-        }
-    });
 
     await Promise.all(callList);
     return current;
@@ -138,19 +126,28 @@ async function main() {
 
         const numWorkers = os.cpus().length; // Use the number of CPU cores
         const workers: Worker[] = [];
+        const chunkSize = 100000n;
+        const maxSize = 100000000n;
+        const chunksPerWorker = maxSize / BigInt(numWorkers);
 
         for (let i = 0; i < numWorkers; i++) {
+            const start = BigInt(i) * chunksPerWorker;
+            const end = start + chunksPerWorker;
+
             const worker = new Worker(new URL(import.meta.url), {
-                workerData: { prev, d }
+                workerData: { prev, d, start, end, chunkSize, workerId: i }
             });
 
             worker.on('message', (msg) => {
                 if (msg.type === 'progress') {
-                    printProgress(msg.current, msg.total);
+                    printProgress(msg.current, Number(maxSize));
                 } else if (msg.type === 'event') {
                     logger.info(`------ ${msg.event} ------`);
                     if (msg.text) logger.info(msg.text);
                     if (msg.data) logger.info(JSON.stringify(msg.data, null, 2));
+                } else if (msg.type === 'result') {
+                    logger.info('Best hash found:', msg.result);
+                    workers.forEach(worker => worker.terminate());
                 }
             });
 
@@ -164,13 +161,18 @@ async function main() {
         await Promise.all(workers.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
 
     } else {
-        const { prev, d } = workerData;
-        const hash = await findHash(prev, d);
+        const { prev, d, start, end, workerId } = workerData;
 
         parentPort?.postMessage({
             type: 'event',
-            event: 'FINISHED',
-            text: 'Best hash found:',
+            event: 'STARTED',
+            text: `Worker ${workerId} started with range ${start} to ${end}`,
+        });
+
+        const hash = await findHashInRange(prev, d, start, end);
+
+        parentPort?.postMessage({
+            type: 'result',
             result: hash
         });
     }
