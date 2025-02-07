@@ -7,7 +7,7 @@ import winston from 'winston';
 const PSEUDONYM = 'lunar';
 const THREAD_COUNT = -1; // Set to undefined to use all available cores
 const MAX_NONCE = 10000000000n;
-const REQUIRED_DIFFICULTY = 20;
+const REQUIRED_DIFFICULTY = 45;
 const PREVIOUS_HASH: Hash = {
 	nonce: 26975069n,
 	hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
