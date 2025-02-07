@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
+import os from 'os';
 
 const pseudonym = 'lunar';
 
@@ -73,7 +74,7 @@ async function findHash(prev: HashPointer, d: number) {
                 return;
             }
             done++;
-            if (done % 10000n === 0n) {
+            if (done % 100000n === 0n) { // Reduce frequency of progress updates
                 parentPort?.postMessage({
                     type: 'progress',
                     current: Number(done),
@@ -119,23 +120,32 @@ async function main() {
     if (isMainThread) {
         console.log('Main thread running');
 
-        const worker = new Worker(new URL(import.meta.url), {
-            workerData: { prev, d }
-        });
+        const numWorkers = os.cpus().length; // Use the number of CPU cores
+        const workers = [];
 
-        worker.on('message', (msg) => {
-            if (msg.type === 'progress') {
-                printProgress(msg.current, msg.total);
-            } else if (msg.type === 'event') {
-                console.log(`------ ${msg.event} ------`);
-                if (msg.text) console.log(msg.text);
-                if (msg.data) console.table(msg.data);
-            }
-        });
+        for (let i = 0; i < numWorkers; i++) {
+            const worker = new Worker(new URL(import.meta.url), {
+                workerData: { prev, d }
+            });
 
-        worker.on('error', (err) => {
-            console.error('Worker error:', err);
-        });
+            worker.on('message', (msg) => {
+                if (msg.type === 'progress') {
+                    printProgress(msg.current, msg.total);
+                } else if (msg.type === 'event') {
+                    console.log(`------ ${msg.event} ------`);
+                    if (msg.text) console.log(msg.text);
+                    if (msg.data) console.table(msg.data);
+                }
+            });
+
+            worker.on('error', (err) => {
+                console.error('Worker error:', err);
+            });
+
+            workers.push(worker);
+        }
+
+        await Promise.all(workers.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
 
     } else {
         const { prev, d } = workerData;
