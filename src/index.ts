@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 import os from 'os';
+import winston from 'winston';
 
 const pseudonym = 'lunar';
 
@@ -9,6 +10,21 @@ type HashPointer = {
     hash: string,
     difficulty: number
 }
+
+// Configure winston logger
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.printf(({ timestamp, level, message }) => {
+            return `${timestamp} [${level.toUpperCase()}]: ${message}`;
+        })
+    ),
+    transports: [
+        new winston.transports.Console(),
+        new winston.transports.File({ filename: 'hash-miner.log' })
+    ]
+});
 
 /**
  * Helper function to create a sha256 hash
@@ -118,10 +134,10 @@ async function main() {
     const d = 45;
 
     if (isMainThread) {
-        console.log('Main thread running');
+        logger.info('Main thread running');
 
         const numWorkers = os.cpus().length; // Use the number of CPU cores
-        const workers = [];
+        const workers: Worker[] = [];
 
         for (let i = 0; i < numWorkers; i++) {
             const worker = new Worker(new URL(import.meta.url), {
@@ -132,14 +148,14 @@ async function main() {
                 if (msg.type === 'progress') {
                     printProgress(msg.current, msg.total);
                 } else if (msg.type === 'event') {
-                    console.log(`------ ${msg.event} ------`);
-                    if (msg.text) console.log(msg.text);
-                    if (msg.data) console.table(msg.data);
+                    logger.info(`------ ${msg.event} ------`);
+                    if (msg.text) logger.info(msg.text);
+                    if (msg.data) logger.info(JSON.stringify(msg.data, null, 2));
                 }
             });
 
             worker.on('error', (err) => {
-                console.error('Worker error:', err);
+                logger.error('Worker error:', err);
             });
 
             workers.push(worker);
