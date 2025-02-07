@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 import os from 'os';
 import winston from 'winston';
+import { createInterface, moveCursor } from 'node:readline';
 
 // ----------------- CONFIGURATION -----------------
 const PSEUDONYM = 'lunar';
@@ -9,9 +10,9 @@ const THREAD_COUNT = -1; // Set to undefined to use all available cores
 const MAX_NONCE = 10000000000n;
 const REQUIRED_DIFFICULTY = 45;
 const PREVIOUS_HASH: Hash = {
-	nonce: 26975069n,
-	hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
-	difficulty: 25
+    nonce: 26975069n,
+    hash: '00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd',
+    difficulty: 25
 };
 // -------------------------------------------------
 
@@ -21,35 +22,25 @@ type Hash = {
     difficulty: number
 }
 
+type Progress = {
+    completed: number;
+    start: number;
+    end: number;
+}
+
 type WorkerData = {
-	id: number;
-	previousHash: Hash;
-	difficulty: number;
-	chunkStart: bigint;
-	chunkEnd: bigint;
+    id: number;
+    previousHash: Hash;
+    difficulty: number;
+    chunkStart: bigint;
+    chunkEnd: bigint;
 }
 
 interface WorkerMessage {
-	type: string;
-	workerId: number;
-	event: string;
-	text: string;
-	data?: object;
-}
-
-interface ProgressEvent extends WorkerMessage {
-	type: 'progress';
-	data: {
-		completed: number;
-		start: number;
-		end: number;
-	};
-}
-
-interface Event extends WorkerMessage {
-	type: 'event';
-	event: 'STARTED' | 'FINISHED' | 'FOUND';
-	data: Hash;
+    workerId: number;
+    event: 'PROGRESS' | 'STARTED' | 'FINISHED' | 'FOUND';
+    text: string;
+    data?: Hash | Progress;
 }
 
 // Configure winston logger
@@ -67,9 +58,10 @@ const logger = winston.createLogger({
     ]
 });
 
-const workerProgress: { [id: number]: { done: number; start: number; end: number; } } = {};
-const workerSummaries: { [id: number]: { nonce: number; hash: string; difficulty: number; } } = {};
+const workerProgress: { [id: number]: Progress } = {};
+const workerSummaries: { [id: number]: Hash } = {};
 const workerList: Worker[] = [];
+
 
 /**
  * Helper function to create a sha256 hash
@@ -84,46 +76,43 @@ function createSha(previousHash: string, nonce: bigint = 0n): string {
  * @param pointer The pointer to check against
  * @returns The difficulty of the nonce
  */
-function getNonceDifficulty(nonce: bigint, prevPointer: Hash, buffer: { binary: Uint8Array }): Hash {
-    const hex = createSha(prevPointer.hash, nonce);
-    const binary = buffer.binary;
+function getNonceDifficulty(nonce: bigint, hash: string): Hash {
+    const hex = createSha(hash, nonce);
 
-    for (let i = 0; i < hex.length; i++) {
-        const bin = parseInt(hex[i], 16).toString(2).padStart(4, '0');
-        for (let j = 0; j < 4; j++) {
-            binary[i * 4 + j] = bin[j] === '0' ? 0 : 1;
-        }
-    }
+    // Convert the hex to binary with leading zeros
+    const binary = hex.split('').map((char) => {
+        return parseInt(char, 16).toString(2).padStart(4, '0');
+    }).join('');
 
-    const leadingZeros = binary.findIndex(bit => bit !== 0);
+    // Count the number of leading zeros
+    const leadingZeros = binary.match(/^0*/)?.[0].length;
 
     return {
         nonce,
         hash: hex,
-        difficulty: leadingZeros === -1 ? binary.length : leadingZeros
-    };
+        difficulty: leadingZeros || 0
+    }
 }
 
+const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+});
 
-function printProgress(workerId: number, data: { completed: number; start: number; end: number }) {
+function printProgress(workerId: number, data: Progress) {
     workerProgress[workerId] = {
-        done: data.completed,
-        start: data.start,
-        end: data.end,
+        completed: data?.completed || 0,
+        start: data?.start || 0,
+        end: data?.end || 0,
     };
 
-    const log = Object.keys(workerProgress).map((id) => {
-        const entry = workerProgress[Number(id)];
-        const percent = (entry.done / (entry.end - entry.start)) * 100;
-        return `Worker ${id}: ${percent.toFixed(2)}% (${entry.start + entry.done} / ${entry.end})`;
-    })
-
     const total = Math.max(...Object.values(workerProgress).map((entry) => entry.end));
-    const completed = Object.values(workerProgress).reduce((prev, entry) => prev + entry.done, 0);
+    const completed = Object.values(workerProgress).reduce((prev, entry) => prev + entry.completed, 0);
+    const progress = (completed / total) * 100;
 
-    // Clear the console
-    process.stdout.write('\x1Bc');
-    process.stdout.write(`------------- WORKER PROGRESS -------------\nGlobal Progress: ${((completed / total) * 100).toFixed(2)}% \n\n${log.join('\n')}\n\n`);
+    moveCursor(process.stdout, -50, 0); // Move cursor left by 50 characters to overwrite the progress
+    process.stdout.write(`Progress: ${progress.toFixed(2)}%`);
+
 }
 
 /**
@@ -132,7 +121,7 @@ function printProgress(workerId: number, data: { completed: number; start: numbe
  * @param worker The worker data
  * @param buffer The buffer to store the binary data
  */
-async function findHashInRange(worker: WorkerData, chunkSubSize: bigint, buffer: { binary: Uint8Array }): Promise<Hash[]> {
+async function findHashInRange(worker: WorkerData, chunkSubSize: bigint): Promise<Hash[]> {
     const callList: Promise<Hash>[] = [];
     const dataSize = worker.chunkEnd - worker.chunkStart;
     const progressUpdateInterval = dataSize / 10n;
@@ -149,7 +138,7 @@ async function findHashInRange(worker: WorkerData, chunkSubSize: bigint, buffer:
             for (let i = chunkStart; i < chunkEnd; i++) {
                 if (found) return current;
 
-                const hash = getNonceDifficulty(i, worker.previousHash, buffer);
+                const hash = getNonceDifficulty(i, worker.previousHash.hash);
                 if (hash.difficulty > current.difficulty) {
                     current.nonce = hash.nonce;
                     current.hash = hash.hash;
@@ -158,11 +147,11 @@ async function findHashInRange(worker: WorkerData, chunkSubSize: bigint, buffer:
 
                 if (current.difficulty >= worker.difficulty) {
                     parentPort?.postMessage({
-                        type: 'event',
                         event: 'FOUND',
+                        workerId: worker.id,
                         text: `Worker ${worker.id} found a hash with difficulty ${worker.difficulty}`,
                         data: current
-                    });
+                    } as WorkerMessage);
                     found = true;
                     break;
                 }
@@ -171,14 +160,14 @@ async function findHashInRange(worker: WorkerData, chunkSubSize: bigint, buffer:
                 // Update progress every 10% of the range
                 if (done % progressUpdateInterval === 0n) {
                     parentPort?.postMessage({
-                        type: 'progress',
+                        event: 'PROGRESS',
                         workerId: worker.id,
                         data: {
                             completed: Number(done),
                             start: Number(worker.chunkStart),
                             end: Number(worker.chunkEnd)
                         }
-                    });
+                    } as WorkerMessage);
                 }
             }
         } catch (error) {
@@ -205,36 +194,29 @@ function createWorker(params: WorkerData): Worker {
         workerData: params
     });
 
-    worker.on('message', (msg: ProgressEvent | Event) => {
-        if (msg.type === 'progress') {
-            printProgress(msg.workerId, (msg as ProgressEvent).data);
-        }
-
-        if (msg.type !== 'event') return;
-
+    worker.on('message', (msg: WorkerMessage) => {
         switch (msg.event) {
+            case 'PROGRESS':
+                return printProgress(msg.workerId, msg.data as Progress);
+
             case 'STARTED':
-                logger.info(msg.text!);
-                break;
+                return logger.info(msg.text);
 
             case 'FINISHED':
-                workerSummaries[params.id] = {
-                    nonce: Number(msg.data!.nonce),
-                    hash: msg.data!.hash!,
-                    difficulty: msg.data!.difficulty!
-                };
-                worker.terminate();
-                break;
+                workerSummaries[msg.workerId] = msg.data as Hash;
+                return worker.terminate();
 
             case 'FOUND':
                 logger.info(msg.text!);
-                logger.info(JSON.stringify({
-                    nonce: Number(msg.data!.nonce),
-                    hash: msg.data!.hash!,
-                    difficulty: msg.data!.difficulty!
-                }));
-                workerList.forEach(worker => worker.terminate());
-                break;
+                logger.info({
+                    nonce: Number((msg.data as Hash).nonce),
+                    hash: (msg.data as Hash).hash,
+                    difficulty: (msg.data as Hash).difficulty
+                });
+                return workerList.forEach(worker => worker.terminate());
+
+            default:
+                throw new Error(`Unknown message event: ${msg.event}`);
         }
     });
 
@@ -271,32 +253,37 @@ async function main() {
         }
 
         const time = performance.now();
-
         await Promise.all(workerList.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
-
-        logger.info('All workers finished');
-        logger.info('Worker summaries:');
-        logger.info(JSON.stringify(workerSummaries, null, 2));
-        logger.info(`Time taken: ${((performance.now() - time) / 1000 / 60).toFixed(2)}m`);
+        rl.close();
+        console.log('\n');
+        logger.info(`Completed in ${((performance.now() - time) / 1000 / 60).toFixed(2)}m`);
+        const bestHash = Object.values(workerSummaries).reduce((prev, current) => {
+            return current.difficulty > prev.difficulty ? current : prev;
+        });
+        logger.info(`Best nonce: ${Number(bestHash.nonce)} with difficulty ${bestHash.difficulty}`);
     } else {
         // Worker thread
         const worker = workerData as WorkerData;
-		const chunkSubSize = (worker.chunkEnd - worker.chunkStart) / 10000n;
+        const chunkSubSize = (worker.chunkEnd - worker.chunkStart) / 10000n;
 
-        logger.info(`Worker ${worker.id} started with range ${worker.chunkStart} to ${worker.chunkEnd}`);
+        parentPort?.postMessage({
+            event: 'STARTED',
+            workerId: worker.id,
+            text: `Worker ${worker.id} started with range ${worker.chunkStart} to ${worker.chunkEnd}`
+        } as WorkerMessage);
 
-        const pointers = await findHashInRange(worker, chunkSubSize, { binary: new Uint8Array() });
+        const pointers = await findHashInRange(worker, chunkSubSize);
 
         const hash = pointers.reduce((prev, current) => {
             return current.difficulty > prev.difficulty ? current : prev;
         });
 
         parentPort?.postMessage({
-            type: 'event',
             event: 'FINISHED',
+            workerId: worker.id,
             text: `Worker ${worker.id} finished`,
             data: hash
-        });
+        } as WorkerMessage);
     }
 }
 

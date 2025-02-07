@@ -5,14 +5,16 @@
   "main": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "node src/index.ts",
+    "start": "NODE_NO_WARNINGS=1 node src/index.ts",
     "inspector": "node --inspect src/index.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@types/node": "^22.12.0",
+    "@types/node": "^22.12.0"
+  },
+  "dependencies": {
     "winston": "^3.17.0"
   }
 }
