@@ -5,8 +5,7 @@
   "main": "index.ts",
   "type": "module",
   "scripts": {
-    "start": "NODE_NO_WARNINGS=1 node src/index.ts",
-    "inspector": "node --inspect src/index.ts"
+    "start": "tsx src/index.ts"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +14,7 @@
     "@types/node": "^22.12.0"
   },
   "dependencies": {
+    "tsx": "^4.19.2",
     "winston": "^3.17.0"
   }
 }
