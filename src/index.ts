@@ -76,7 +76,7 @@ function createSha(previousHash: string, nonce: bigint = 0n): string {
  * @param pointer The pointer to check against
  * @returns The difficulty of the nonce
  */
-function getNonceDifficulty(nonce: bigint, hash: string): Hash {
+function createSHA256(nonce: bigint, hash: string): Hash {
     const hex = createSha(hash, nonce);
 
     // Convert the hex to binary with leading zeros
@@ -138,7 +138,7 @@ async function findHashInRange(worker: WorkerData, chunkSubSize: bigint): Promis
             for (let i = chunkStart; i < chunkEnd; i++) {
                 if (found) return current;
 
-                const hash = getNonceDifficulty(i, worker.previousHash.hash);
+                const hash = createSHA256(i, worker.previousHash.hash);
                 if (hash.difficulty > current.difficulty) {
                     current.nonce = hash.nonce;
                     current.hash = hash.hash;
@@ -186,6 +186,30 @@ async function findHashInRange(worker: WorkerData, chunkSubSize: bigint): Promis
 }
 
 /**
+ * Estimate the time it will take to find a hash with the required difficulty 2^256 - difficulty
+ * @param threads 
+ * @param difficulty 
+ */
+function estimateTime(threads: number, difficulty: number): number {
+    const requiredCalls = Math.pow(2, 256 - difficulty) / threads;
+
+    // Run the hashing process for a fixed duration (e.g., 100ms) to measure the time per call
+    const duration = 1000; // in milliseconds
+    const start = performance.now();
+    let iterations = 0;
+
+    while (performance.now() - start < duration) {
+        createSHA256(BigInt(iterations), PREVIOUS_HASH.hash);
+        iterations++;
+    }
+
+    const end = performance.now();
+    const timePerCall = (end - start) / iterations; // average time per call in milliseconds
+
+    return requiredCalls * timePerCall / 1000; // convert to seconds
+}
+
+/**
  * Create a worker with the given parameters
  * @param params The worker data
  */
@@ -227,6 +251,16 @@ function createWorker(params: WorkerData): Worker {
     return worker;
 }
 
+function msToTime(duration: number) {
+    const milliseconds = Math.floor((duration % 1000) / 100),
+        seconds = Math.floor((duration / 1000) % 60),
+        minutes = Math.floor((duration / (1000 * 60)) % 60),
+        hours = Math.floor((duration / (1000 * 60 * 60)) % 24);
+
+    return `${hours}h ${minutes}m ${seconds}s ${milliseconds}ms`;
+}
+
+
 /**
  * Main thread entry point
  */
@@ -237,6 +271,11 @@ async function main() {
     const maxChunkSize = baseChunkSize < MAX_NONCE ? baseChunkSize : MAX_NONCE;
     const chunkSize = baseChunkSize < minChunkSize ? minChunkSize : (baseChunkSize > maxChunkSize ? maxChunkSize : baseChunkSize);
     const remainder = MAX_NONCE % BigInt(numWorkers);
+
+    logger.info('Main thread running');
+    logger.info(`Using ${numWorkers} workers with chunk size ${chunkSize} and remainder ${remainder}`);
+    logger.info(`Estimated time to find a hash with difficulty ${REQUIRED_DIFFICULTY}: ${msToTime(estimateTime(numWorkers, REQUIRED_DIFFICULTY))}`);
+    const time = performance.now();
 
     for (let i = 0; i < numWorkers; i++) {
         const start = BigInt(i) * chunkSize;
@@ -251,9 +290,6 @@ async function main() {
         workerList.push(worker);
     }
 
-    logger.info('Main thread running');
-    logger.info(`Using ${numWorkers} workers with chunk size ${chunkSize} and remainder ${remainder}`);
-    const time = performance.now();
     await Promise.all(workerList.map(worker => new Promise((resolve) => worker.on('exit', resolve))));
     rl.close();
     console.log('\n');
