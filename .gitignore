@@ -1,3 +1,4 @@
 node_modules
 hash-miner.log
 .DS_Store
+result.json
