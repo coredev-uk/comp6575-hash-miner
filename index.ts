@@ -8,22 +8,23 @@ import {
   workerData,
 } from "node:worker_threads";
 import process from "node:process";
+import { nanoid } from 'nanoid'
+import { formatDistanceToNowStrict } from "date-fns";
 
 // ----------------- CONFIGURATION -----------------
 const PSEUDONYM = "lunar";
 const THREAD_COUNT = Math.max(1, cpus().length - 1); // Use one less than available cores for efficiency
-const MAX_NONCE = 100000000n;
 const REQUIRED_DIFFICULTY = 45;
-const PREVIOUS_HASH =
-  "00000057d4ea853d9331fea2e182e7a48b118ef70ef9203a6df250d6756a3acd";
-
+const PREVIOUS_HASH = "00000001c3e6b414dd1745219ac497b02da76d16639e9ccabb06509751e5f6a7";
+const BLOCK_SIZE = Infinity; // Number of nonces to check per thread
 // ----------------- OPTIMIZED WORKER CODE -----------------
 if (!isMainThread) {
-  const { previousHash, difficulty, chunkStart, chunkEnd, pseudonym } =
-    workerData;
-  let nonce = chunkStart;
+  const { previousHash, difficulty, size, pseudonym } = workerData;
+  let bestDifficulty = 25;
 
-  while (nonce < chunkEnd) {
+  for (let i = 0; i < size; i++) {
+    const nonce = nanoid();
+
     const hash = createHash("sha256").update(
       previousHash + pseudonym + nonce.toString(),
     ).digest("hex");
@@ -31,26 +32,33 @@ if (!isMainThread) {
     const leadingZeros = binaryHash.indexOf("1"); // First occurrence of '1' gives leading zeros count
 
     if (leadingZeros >= difficulty) {
-      parentPort?.postMessage({ nonce, hash, difficulty: leadingZeros });
+      parentPort?.postMessage({ type: "RESULT", nonce, difficulty: leadingZeros });
       process.exit(0); // Early exit on success
     }
 
-    nonce++;
+    if (leadingZeros > bestDifficulty) {
+      parentPort?.postMessage({ type: "UPDATE", nonce, difficulty: leadingZeros });
+      bestDifficulty = leadingZeros;
+    }
   }
+
   parentPort?.postMessage("done");
 } else {
-  const start = performance.now();
-  const chunkSize = MAX_NONCE / BigInt(THREAD_COUNT);
+  const start = Date.now();
+  console.log(`Mining with ${THREAD_COUNT} threads...`);
   let completed = 0;
   let found = false;
+  let currentBest = {
+    difficulty: 0,
+    nonce: 0,
+  }
 
   for (let i = 0; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
         previousHash: PREVIOUS_HASH,
         difficulty: REQUIRED_DIFFICULTY,
-        chunkStart: BigInt(i) * chunkSize,
-        chunkEnd: BigInt(i + 1) * chunkSize,
+        size: BLOCK_SIZE,
         pseudonym: PSEUDONYM,
       },
     });
@@ -60,11 +68,18 @@ if (!isMainThread) {
         completed++;
       }
 
-      if (result && result.nonce !== undefined && !found) {
+      if (result?.type === "UPDATE") {
+        if (result.difficulty > currentBest.difficulty) {
+          currentBest = {
+            difficulty: result.difficulty,
+            nonce: result.nonce,
+          }
+          console.log(`[${formatDistanceToNowStrict(start)}] Best nonce so far: ${result.nonce} with difficulty ${result.difficulty}`);
+        }
+      } else if (result?.type === "RESULT" && !found) {
         found = true;
-        const time = ((performance.now() - start) / 1000)
         console.log(
-          `\nFound valid hash: ${result.hash} at nonce ${result.nonce} with difficulty ${result.difficulty} in ${time.toFixed(2)} seconds.`,
+          `\nFound valid hash: ${result.hash} at nonce ${result.nonce} with difficulty ${result.difficulty} in ${formatDistanceToNowStrict(start)}`,
         );
         writeFileSync(
           "result.json",
@@ -73,7 +88,7 @@ if (!isMainThread) {
               hash: result.hash,
               nonce: Number(result.nonce),
               difficulty: result.difficulty,
-              duration: time,
+              duration: formatDistanceToNowStrict(start),
             },
             null,
             2,
