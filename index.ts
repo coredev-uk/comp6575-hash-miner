@@ -45,7 +45,7 @@ if (!isMainThread) {
   parentPort?.postMessage("done");
 } else {
   const start = Date.now();
-  console.log(`Mining with ${THREAD_COUNT} threads...`);
+  console.log(`Starting on ${THREAD_COUNT} worker threads...`);
   let completed = 0;
   let found = false;
   let currentBest = {
