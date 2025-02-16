@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import {
@@ -9,7 +8,7 @@ import {
 } from "node:worker_threads";
 import process from "node:process";
 import { nanoid } from 'nanoid'
-import { formatDistanceToNowStrict } from "date-fns";
+import { formatDistanceToNowStrict, format } from "date-fns";
 
 // ----------------- CONFIGURATION -----------------
 const PSEUDONYM = "lunar";
@@ -25,9 +24,9 @@ if (!isMainThread) {
   for (let i = 0; i < size; i++) {
     const nonce = nanoid();
 
-    const hash = createHash("sha256").update(
-      previousHash + pseudonym + nonce.toString(),
-    ).digest("hex");
+    const hash = new Bun.CryptoHasher("sha256")
+      .update(`${previousHash}${pseudonym}${nonce}`)
+      .digest("hex");
     const binaryHash = BigInt("0x" + hash).toString(2).padStart(256, "0"); // Ensure full 256-bit binary representation
     const leadingZeros = binaryHash.indexOf("1"); // First occurrence of '1' gives leading zeros count
 
@@ -44,8 +43,19 @@ if (!isMainThread) {
 
   parentPort?.postMessage("done");
 } else {
+  writeFileSync("hasher.log", ""); // Clear log file
+
+  const log = (message: string) => {
+    console.log(`[${format(new Date(Date.now()), 'dd/MM/yy kk:mm')}] ${message}`);
+    writeFileSync(
+      "hasher.log",
+      `${new Date(Date.now()).toISOString()} - ${message}\n`,
+      { flag: "a" },
+    );
+  }
+
   const start = Date.now();
-  console.log(`Starting on ${THREAD_COUNT} worker threads...`);
+  log(`Starting on ${THREAD_COUNT} worker threads...\n`);
   let completed = 0;
   let found = false;
   let currentBest = {
@@ -74,11 +84,11 @@ if (!isMainThread) {
             difficulty: result.difficulty,
             nonce: result.nonce,
           }
-          console.log(`[${formatDistanceToNowStrict(start)}] Best nonce so far: ${result.nonce} with difficulty ${result.difficulty}`);
+          log(`Best nonce so far: ${result.nonce} with difficulty ${result.difficulty}`);
         }
       } else if (result?.type === "RESULT" && !found) {
         found = true;
-        console.log(
+        log(
           `\nFound valid hash: ${result.hash} at nonce ${result.nonce} with difficulty ${result.difficulty} in ${formatDistanceToNowStrict(start)}`,
         );
         writeFileSync(
@@ -98,7 +108,7 @@ if (!isMainThread) {
       }
 
       if (completed === THREAD_COUNT && !found) {
-        console.log(
+        log(
           "\nNo valid hash found. Increase difficulty range or adjust nonce limits.",
         );
       }
