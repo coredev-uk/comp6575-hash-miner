@@ -3,13 +3,15 @@
   "module": "index.ts",
   "type": "module",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/yargs": "^17.0.33"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
   },
   "dependencies": {
     "date-fns": "^4.1.0",
-    "nanoid": "^5.0.9"
+    "nanoid": "^5.0.9",
+    "yargs": "^17.7.2"
   }
 }
