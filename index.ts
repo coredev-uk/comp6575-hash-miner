@@ -16,10 +16,7 @@ if (!isMainThread) {
   const { previousHash, difficulty, size, pseudonym, updateInterval } = workerData;
   let bestDifficulty = 25;
   let count = 0;
-
-  setInterval(() => {
-    parentPort?.postMessage({ type: "INTERVAL-UPDATE", count });
-  }, updateInterval);
+  let lastUpdate = Date.now();
 
   for (let i = 0; i < size; i++) {
     const nonce = nanoid();
@@ -40,6 +37,12 @@ if (!isMainThread) {
       bestDifficulty = leadingZeros;
     }
 
+    // Update every updateInterval milliseconds
+    if (Date.now() - lastUpdate > (updateInterval * 0.95)) {
+      parentPort?.postMessage({ type: "INTERVAL-UPDATE", count });
+      lastUpdate = Date.now();
+    }
+
     count++;
   }
 
@@ -47,51 +50,46 @@ if (!isMainThread) {
 } else {
   const argv = yargs(hideBin(process.argv))
     .options({
-
       "pseudonym": {
         alias: "p",
         type: "string",
         description: "Pseudonym to use in the hash",
         demandOption: true
       },
-
       "hash": {
         alias: "h",
         type: "string",
         description: "The previous hash value",
         default: null,
       },
-
       "threads": {
         alias: "t",
         type: "number",
         description: "Number of threads to use",
         default: cpus().length,
       },
-
       "difficulty": {
         alias: "d",
         type: "number",
         description: "The minimum difficulty level to reach",
         default: 20,
       },
-
       "capacity": {
         alias: "c",
         type: "number",
         description: "Number of nonces to check per thread",
         default: Infinity,
       },
-
       "update-interval": {
         alias: "u",
         type: "number",
-        description: "Interval in minutes to log the best nonce",
-        default: 60 * 60 * 1000,
-      },
-
+        description: "Interval in seconds to update the log",
+        default: 60,
+      }
     })
-    .usage("Usage: $0 -p [pseudonym] -h [hash] -t [threads] -d [difficulty] -c [capacity]")
+    .usage("Usage: $0 [options]")
+    .example("$0 -p 'Alice' -d 20 -t 4", "Start mining with 4 threads and a difficulty of 20")
+    .example("$0 -p 'Bob' -d 25 -t 8 -c 100000", "Start mining with 8 threads and a difficulty of 25, checking 100,000 nonces per thread")
     .help()
     .parseSync();
 
@@ -124,17 +122,12 @@ if (!isMainThread) {
   })
   console.log();
   let completed = 0;
+  let count = 0;
   let found = false;
   let currentBest = {
     difficulty: 0,
     nonce: 0,
   }
-  let count = 0;
-
-  setInterval(() => {
-    log(`Total nonces checked: ${count.toLocaleString()}. Time elapsed: ${formatDistanceToNowStrict(start)}`, true);
-  }, UPDATE_INTERVAL);
-
 
   for (let i = 0; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
@@ -159,7 +152,6 @@ if (!isMainThread) {
             nonce: result.nonce,
           }
           log(`Best nonce so far: ${result.nonce} with difficulty ${result.difficulty}`);
-          count += result.count;
         }
       } else if (result?.type === "INTERVAL-UPDATE") {
         count += result.count;
@@ -195,4 +187,8 @@ if (!isMainThread) {
       console.error(error);
     });
   }
+
+  setInterval(() => {
+    log(`[INTERVAL-UPDATE] Total nonces checked: ${count.toLocaleString()} | Elapsed runtime: ${formatDistanceToNowStrict(start)}`, true);
+  }, UPDATE_INTERVAL);
 }
