@@ -10,44 +10,10 @@ import process from "node:process";
 import { nanoid } from 'nanoid'
 import { formatDistanceToNowStrict, format } from "date-fns";
 import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
 
-const argv = yargs(process.argv)
-  .option("pseudonym", {
-    alias: "p",
-    type: "string",
-    description: "Pseudonym to use in the hash",
-  })
-  // .demandOption("pseudonym")
-  .option("threads", {
-    alias: "t",
-    type: "number",
-    description: "Number of threads to use",
-  })
-  .option("difficulty", {
-    alias: "d",
-    type: "number",
-    description: "Difficulty level to reach",
-  })
-  .option("previous", {
-    alias: "prev",
-    type: "string",
-    description: "Previous hash value",
-  })
-  // .demandOption(["pseudonym", "previous"])
-  .usage("Usage: $0 -p [pseudonym] --previous [previous hash]")
-  .help()
-  .alias("help", "h")
-  .parseSync();
-
-// ----------------- CONFIGURATION -----------------
-const PSEUDONYM = argv.pseudonym
-const THREAD_COUNT = Math.max(1, argv.threads || (cpus().length - 1));
-const REQUIRED_DIFFICULTY = argv.difficulty || 20;
-const PREVIOUS_HASH = argv.previous
-const BLOCK_SIZE = Infinity; // Number of nonces to check per thread
-// ----------------- OPTIMIZED WORKER CODE -----------------
 if (!isMainThread) {
-  const { previousHash, difficulty, size, pseudonym } = workerData;
+  const { previousHash, difficulty, size, pseudonym, updateInterval } = workerData;
   let bestDifficulty = 25;
   let count = 0;
   let lastUpdate = Date.now();
@@ -56,24 +22,23 @@ if (!isMainThread) {
     const nonce = nanoid();
 
     const hash = new Bun.CryptoHasher("sha256")
-      .update(`${previousHash}${pseudonym}${nonce}`)
+      .update(`${previousHash ?? ''}${pseudonym}${nonce}`)
       .digest("hex");
     const binaryHash = BigInt("0x" + hash).toString(2).padStart(256, "0"); // Ensure full 256-bit binary representation
     const leadingZeros = binaryHash.indexOf("1"); // First occurrence of '1' gives leading zeros count
 
     if (leadingZeros >= difficulty) {
-      parentPort?.postMessage({ type: "RESULT", nonce, difficulty: leadingZeros });
+      parentPort?.postMessage({ type: "RESULT", nonce, difficulty: leadingZeros, hash: hash });
       process.exit(0); // Early exit on success
     }
 
     if (leadingZeros > bestDifficulty) {
-      parentPort?.postMessage({ type: "UPDATE", nonce, difficulty: leadingZeros });
+      parentPort?.postMessage({ type: "UPDATE", nonce, difficulty: leadingZeros, count });
       bestDifficulty = leadingZeros;
     }
 
-    // Every hour send an update with the best difficulty so far and the count
-    if (Date.now() - lastUpdate > 60 * 60 * 1000) {
-      parentPort?.postMessage({ type: "UPDATE", nonce, difficulty: bestDifficulty, count });
+    if (Date.now() - lastUpdate > (updateInterval * 0.9)) {
+      parentPort?.postMessage({ type: "INTERVAL-UPDATE", nonce, difficulty: bestDifficulty, count });
       lastUpdate = Date.now();
     }
 
@@ -82,6 +47,63 @@ if (!isMainThread) {
 
   parentPort?.postMessage("done");
 } else {
+  const argv = yargs(hideBin(process.argv))
+  .options({
+
+    "pseudonym": {
+      alias: "p",
+      type: "string",
+      description: "Pseudonym to use in the hash",
+      demandOption: true
+    },
+
+    "hash": {
+      alias: "h",
+      type: "string",
+      description: "The previous hash value",
+      default: null,
+    },
+
+    "threads": {
+      alias: "t",
+      type: "number",
+      description: "Number of threads to use",
+      default: cpus().length - 1,
+    },
+
+    "difficulty": {
+      alias: "d",
+      type: "number",
+      description: "The minimum difficulty level to reach",
+      default: 20,
+    },
+
+    "capacity": {
+      alias: "c",
+      type: "number",
+      description: "Number of nonces to check per thread",
+      default: Infinity,
+    },
+
+    "update-interval": {
+      alias: "u",
+      type: "number",
+      description: "Interval in minutes to log the best nonce",
+      default: 60 * 60 * 1000,
+    },
+
+  })
+  .usage("Usage: $0 -p [pseudonym] -h [hash] -t [threads] -d [difficulty] -c [capacity]")
+  .help()
+  .parseSync();
+
+  const PSEUDONYM = argv.pseudonym || 'default';
+  const THREAD_COUNT = Math.max(1, argv.threads);
+  const REQUIRED_DIFFICULTY = argv.difficulty || 20;
+  const PREVIOUS_HASH = argv.hash || null
+  const BLOCK_SIZE = argv.capacity || Infinity;
+  const UPDATE_INTERVAL = argv['update-interval'] * 1000;
+
   writeFileSync("hasher.log", ""); // Clear log file
 
   const log = (message: string) => {
@@ -94,7 +116,14 @@ if (!isMainThread) {
   }
 
   const start = Date.now();
-  log(`Starting hash mining with: \n${THREAD_COUNT} threads, \nDifficulty: ${REQUIRED_DIFFICULTY}, \nPrevious hash: ${PREVIOUS_HASH}, \nPseudonym: ${PSEUDONYM}`);
+  log(`Starting hash mining with ${THREAD_COUNT} workers.`);
+  console.table({
+    threads: THREAD_COUNT,
+    difficulty: REQUIRED_DIFFICULTY,
+    previousHash: PREVIOUS_HASH,
+    pseudonym: PSEUDONYM,
+  })
+  console.log();
   let completed = 0;
   let found = false;
   let currentBest = {
@@ -103,6 +132,11 @@ if (!isMainThread) {
   }
   let count = 0;
 
+  setInterval(() => {
+    log(`Total nonces checked: ${count}`);
+  }, UPDATE_INTERVAL);
+
+
   for (let i = 0; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
@@ -110,6 +144,7 @@ if (!isMainThread) {
         difficulty: REQUIRED_DIFFICULTY,
         size: BLOCK_SIZE,
         pseudonym: PSEUDONYM,
+        updateInterval: UPDATE_INTERVAL,
       },
     });
 
@@ -125,15 +160,14 @@ if (!isMainThread) {
             nonce: result.nonce,
           }
           log(`Best nonce so far: ${result.nonce} with difficulty ${result.difficulty}`);
-          if (result.count) {
-            count += result.count;
-            log(`Total nonces checked so far: ${count}`);
-          }
+          count += result.count;
         }
+      } else if (result?.type === "INTERVAL-UPDATE") {
+        count += result.count;
       } else if (result?.type === "RESULT" && !found) {
         found = true;
         log(
-          `Found valid hash: ${result.hash} at nonce ${result.nonce} with difficulty ${result.difficulty} in ${formatDistanceToNowStrict(start)}`,
+          `Found valid hash: \n${result.hash}\nNonce: ${result.nonce} (d = ${result.difficulty})\nCompleted in ${formatDistanceToNowStrict(start)}`,
         );
         writeFileSync(
           "result.json",
