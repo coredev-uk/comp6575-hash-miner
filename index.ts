@@ -16,7 +16,7 @@ if (!isMainThread) {
   const { previousHash, difficulty, size, pseudonym, updateInterval } = workerData;
   let bestDifficulty = 25;
   let count = 0;
-  
+
   setInterval(() => {
     parentPort?.postMessage({ type: "INTERVAL-UPDATE", count });
   }, updateInterval);
@@ -46,54 +46,54 @@ if (!isMainThread) {
   parentPort?.postMessage("done");
 } else {
   const argv = yargs(hideBin(process.argv))
-  .options({
+    .options({
 
-    "pseudonym": {
-      alias: "p",
-      type: "string",
-      description: "Pseudonym to use in the hash",
-      demandOption: true
-    },
+      "pseudonym": {
+        alias: "p",
+        type: "string",
+        description: "Pseudonym to use in the hash",
+        demandOption: true
+      },
 
-    "hash": {
-      alias: "h",
-      type: "string",
-      description: "The previous hash value",
-      default: null,
-    },
+      "hash": {
+        alias: "h",
+        type: "string",
+        description: "The previous hash value",
+        default: null,
+      },
 
-    "threads": {
-      alias: "t",
-      type: "number",
-      description: "Number of threads to use",
-      default: cpus().length - 1,
-    },
+      "threads": {
+        alias: "t",
+        type: "number",
+        description: "Number of threads to use",
+        default: cpus().length,
+      },
 
-    "difficulty": {
-      alias: "d",
-      type: "number",
-      description: "The minimum difficulty level to reach",
-      default: 20,
-    },
+      "difficulty": {
+        alias: "d",
+        type: "number",
+        description: "The minimum difficulty level to reach",
+        default: 20,
+      },
 
-    "capacity": {
-      alias: "c",
-      type: "number",
-      description: "Number of nonces to check per thread",
-      default: Infinity,
-    },
+      "capacity": {
+        alias: "c",
+        type: "number",
+        description: "Number of nonces to check per thread",
+        default: Infinity,
+      },
 
-    "update-interval": {
-      alias: "u",
-      type: "number",
-      description: "Interval in minutes to log the best nonce",
-      default: 60 * 60 * 1000,
-    },
+      "update-interval": {
+        alias: "u",
+        type: "number",
+        description: "Interval in minutes to log the best nonce",
+        default: 60 * 60 * 1000,
+      },
 
-  })
-  .usage("Usage: $0 -p [pseudonym] -h [hash] -t [threads] -d [difficulty] -c [capacity]")
-  .help()
-  .parseSync();
+    })
+    .usage("Usage: $0 -p [pseudonym] -h [hash] -t [threads] -d [difficulty] -c [capacity]")
+    .help()
+    .parseSync();
 
   const PSEUDONYM = argv.pseudonym || 'default';
   const THREAD_COUNT = Math.max(1, argv.threads);
@@ -104,13 +104,14 @@ if (!isMainThread) {
 
   writeFileSync("hasher.log", ""); // Clear log file
 
-  const log = (message: string) => {
+  const log = (message: string, noWrite?: boolean) => {
     console.log(`[${format(new Date(Date.now()), 'dd/MM/yy kk:mm')}] ${message}\n`);
-    writeFileSync(
-      "hasher.log",
-      `${new Date(Date.now()).toISOString()} - ${message}\n`,
-      { flag: "a" },
-    );
+    if (!noWrite)
+      writeFileSync(
+        "hasher.log",
+        `${new Date(Date.now()).toISOString()} - ${message}\n`,
+        { flag: "a" },
+      );
   }
 
   const start = Date.now();
@@ -131,7 +132,7 @@ if (!isMainThread) {
   let count = 0;
 
   setInterval(() => {
-    log(`Total nonces checked: ${count.toLocaleString()}`);
+    log(`Total nonces checked: ${count.toLocaleString()}. Time elapsed: ${formatDistanceToNowStrict(start)}`, true);
   }, UPDATE_INTERVAL);
 
 
