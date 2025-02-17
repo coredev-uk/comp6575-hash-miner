@@ -16,7 +16,10 @@ if (!isMainThread) {
   const { previousHash, difficulty, size, pseudonym, updateInterval } = workerData;
   let bestDifficulty = 25;
   let count = 0;
-  let lastUpdate = Date.now();
+  
+  setInterval(() => {
+    parentPort?.postMessage({ type: "INTERVAL-UPDATE", count });
+  }, updateInterval);
 
   for (let i = 0; i < size; i++) {
     const nonce = nanoid();
@@ -35,11 +38,6 @@ if (!isMainThread) {
     if (leadingZeros > bestDifficulty) {
       parentPort?.postMessage({ type: "UPDATE", nonce, difficulty: leadingZeros, count });
       bestDifficulty = leadingZeros;
-    }
-
-    if (Date.now() - lastUpdate > (updateInterval * 0.9)) {
-      parentPort?.postMessage({ type: "INTERVAL-UPDATE", nonce, difficulty: bestDifficulty, count });
-      lastUpdate = Date.now();
     }
 
     count++;
@@ -133,7 +131,7 @@ if (!isMainThread) {
   let count = 0;
 
   setInterval(() => {
-    log(`Total nonces checked: ${count}`);
+    log(`Total nonces checked: ${count.toLocaleString()}`);
   }, UPDATE_INTERVAL);
 
 
