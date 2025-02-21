@@ -115,7 +115,11 @@ if (!isMainThread) {
 
   const THREAD_COUNT = Math.max(1, argv.threads);
   const UPDATE_INTERVAL = argv['update-interval'] * 1000;
-  const FILE_NAME = `miner-${argv.pseudonym}-${Date.now()}.log`;
+  const FILE_NAME = `miner-${argv.pseudonym}-submission.log`;
+  const TOYCHAIN_URL = "https://www.cs.kent.ac.uk/people/staff/sb2213/toychain_comp6575_2425_a1/toy-chain.php"
+
+  // Wipe the file
+  writeFileSync(FILE_NAME, '');
 
   const update_log = (message: string) => {
     writeFileSync(FILE_NAME, message + '\n', { flag: 'a' });
@@ -155,11 +159,10 @@ if (!isMainThread) {
       } else if (data?.type === "UPDATE") {
         const block = data.block;        
         if (block.difficulty > lastBlock.difficulty) {
-          console.log(`New best hash found! Difficulty: ${block.difficulty} | Nonce: ${block.nonce}`);
-          await submitHash(block);
+          await addBlock(block);
           blockCount++;
           if (block.difficulty >= (argv['max-difficulty'])) {
-            console.log(`Required difficulty obtained! Total of ${blockCount} blocks to the chain. Runtime: ${formatDistanceToNowStrict(start)}`);
+            console.log(`Required difficulty obtained! Time taken: ${formatDistanceToNowStrict(start)}. Total hashes computed: ${hashCount.toLocaleString()}, total blocks submitted: ${blockCount}.\n Available @ ${TOYCHAIN_URL}`);
             process.exit(0); // Stop all processes early
           }
         }
@@ -178,7 +181,7 @@ if (!isMainThread) {
     console.log(`[${now.toLocaleDateString('en-GB')} ${now.toLocaleTimeString('en-GB')}] Hashes: ${hashCount.toLocaleString()} | Blocks: ${blockCount}`);
   }, UPDATE_INTERVAL);
 
-  async function submitHash(block: Block) {
+  async function addBlock(block: Block) {
     const formData = new FormData();
     formData.append("inputPreviousHash", block.previous.trim());
     formData.append("inputMiner", block.pseudonym.trim());
@@ -186,7 +189,7 @@ if (!isMainThread) {
     formData.append("submit-block", "Submit New Block");
 
     try {
-      const response = await fetch("https://www.cs.kent.ac.uk/people/staff/sb2213/toychain_comp6575_2425_a1/toy-chain.php", {
+      const response = await fetch(TOYCHAIN_URL, {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -204,6 +207,7 @@ if (!isMainThread) {
         // Update the hash
         lastBlock = block;
         update_log(`${block.previous}${block.pseudonym}${block.nonce}`);
+        console.log(`Block submitted with difficulty ${block.difficulty}.`);
         return Promise.all(workers.map((worker) => worker.postMessage({ type: "BLOCK-UPDATE", block })));
       } else {
         // get the message containing sorry
