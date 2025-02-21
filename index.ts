@@ -8,12 +8,27 @@ import {
 } from "node:worker_threads";
 import process from "node:process";
 import { nanoid } from 'nanoid'
-import { formatDistanceToNowStrict, format } from "date-fns";
+import { formatDistanceToNowStrict } from "date-fns";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 
-function worker(data: { size: number; pseudonym: string; updateInterval: number; difficulty: number; previous: string }) {
-  const { size, pseudonym, updateInterval } = data;
+type Block = {
+  previous: string;
+  pseudonym: string;
+  nonce: string;
+  sha256: string;
+  difficulty: number;
+}
+
+type WorkerData = {
+  pseudonym: string;
+  difficulty: number;
+  previous: string;
+  updateInterval: number;
+}
+
+function worker(data: WorkerData) {
+  const { pseudonym, updateInterval } = data;
   let bestDifficulty = workerData.difficulty;
   let previousHash = workerData.previous
   let count = 0;
@@ -24,7 +39,7 @@ function worker(data: { size: number; pseudonym: string; updateInterval: number;
     bestDifficulty = data.difficulty;
   });
 
-  for (let i = 0; i < size; i++) {
+  while (true) {
     const nonce = nanoid();
     const raw = `${previousHash ?? ''}${pseudonym}${nonce}`;
     const sha = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
@@ -34,14 +49,16 @@ function worker(data: { size: number; pseudonym: string; updateInterval: number;
     if (difficulty > bestDifficulty) {
       parentPort?.postMessage({
         type: "UPDATE",
-        data: {
+        block: {
+          previous: previousHash,
+          pseudonym,
           nonce,
-          hash: sha,
-          raw,
-          difficulty: difficulty,
-          count
-        }
+          sha256: sha,
+          difficulty
+        } as Block
       });
+      previousHash = sha;
+      bestDifficulty = difficulty;
     }
 
     // Update every updateInterval milliseconds
@@ -52,8 +69,6 @@ function worker(data: { size: number; pseudonym: string; updateInterval: number;
 
     count++;
   }
-
-  parentPort?.postMessage("done");
 }
 
 if (!isMainThread) {
@@ -72,6 +87,7 @@ if (!isMainThread) {
         type: "string",
         description: "The previous hash value",
         default: null,
+        demandOption: true
       },
       "threads": {
         alias: "t",
@@ -79,17 +95,11 @@ if (!isMainThread) {
         description: "Number of threads to use",
         default: cpus().length,
       },
-      "difficulty": {
+      "max-difficulty": {
         alias: "d",
         type: "number",
-        description: "The minimum difficulty level to reach",
-        default: 20,
-      },
-      "capacity": {
-        alias: "c",
-        type: "number",
-        description: "Number of nonces to check per thread",
-        default: Infinity,
+        description: "The maximum difficulty to reach",
+        default: Infinity
       },
       "update-interval": {
         alias: "u",
@@ -100,7 +110,6 @@ if (!isMainThread) {
     })
     .usage("Usage: $0 [options]")
     .example("$0 -p 'Alice' -d 20 -t 4", "Start mining with 4 threads and a difficulty of 20")
-    .example("$0 -p 'Bob' -d 25 -t 8 -c 100000", "Start mining with 8 threads and a difficulty of 25, checking 100,000 nonces per thread")
     .help()
     .parseSync();
 
@@ -109,51 +118,48 @@ if (!isMainThread) {
   const FILE_NAME = `miner-${argv.pseudonym}-${Date.now()}.log`;
 
   const update_log = (message: string) => {
-    writeFileSync(FILE_NAME, message, { flag: 'a' })
+    writeFileSync(FILE_NAME, message + '\n', { flag: 'a' });
   }
 
   const start = Date.now();
-  console.log(`Starting hash mining with ${THREAD_COUNT} workers.`);
   let hashCount = 0;
   let blockCount = 0;
   let lastBlock = {
-    difficulty: BigInt("0x" + argv.hash).toString(2).padStart(256, "0"),
-    nonce: null as string | null,
-    sha256: argv.hash
-  }
+    previous: null as string | null,
+    difficulty: BigInt("0x" + argv.hash).toString(2).padStart(256, "0").indexOf("1"),
+    nonce: "",
+    sha256: argv.hash,
+    pseudonym: argv.pseudonym
+  } as Block;
   const workers: Worker[] = [];
+  const startingDifficulty = lastBlock.difficulty + 1;
 
   // Push the initial value to the file name
   update_log(argv.pseudonym)
 
+  console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}.\n`);
+
   for (let i = 0; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
-        previousHash: argv.hash,
-        difficulty: argv.difficulty,
-        size: argv.capacity,
+        previous: argv.hash,
+        difficulty: (startingDifficulty),
         pseudonym: argv.pseudonym,
         updateInterval: UPDATE_INTERVAL,
-      },
+      } as WorkerData,
     });
 
-    worker.on("message", async (block) => {
-      if (block?.type === "INTERVAL-UPDATE") {
-        hashCount += block.count;
-      } else {
+    worker.on("message", async (data: { type: string, block: Block, count: number}) => {
+      if (data?.type === "INTERVAL-UPDATE") {
+        hashCount += data.count;
+      } else if (data?.type === "UPDATE") {
+        const block = data.block;        
         if (block.difficulty > lastBlock.difficulty) {
-          lastBlock = {
-            difficulty: block.difficulty,
-            nonce: block.nonce,
-            sha256: block.hash
-          }
           console.log(`New best hash found! Difficulty: ${block.difficulty} | Nonce: ${block.nonce}`);
-          await submitHash(lastBlock.sha256!, argv.pseudonym, block.nonce);
-          updatePreviousHash(block.hash, block.difficulty);
+          await submitHash(block);
           blockCount++;
-
-          if (block.difficulty >= argv.difficulty) {
-            console.log(`Required difficulty obtained! Added ${blockCount} blocks to the chain.`);
+          if (block.difficulty >= (argv['max-difficulty'])) {
+            console.log(`Required difficulty obtained! Total of ${blockCount} blocks to the chain. Runtime: ${formatDistanceToNowStrict(start)}`);
             process.exit(0); // Stop all processes early
           }
         }
@@ -168,14 +174,15 @@ if (!isMainThread) {
   }
 
   setInterval(() => {
-    console.log(`[INTERVAL-UPDATE] Total hashes computed: ${hashCount.toLocaleString()} | Elapsed runtime: ${formatDistanceToNowStrict(start)}`, true);
+    const now = new Date(Date.now())
+    console.log(`[${now.toLocaleDateString('en-GB')} ${now.toLocaleTimeString('en-GB')}] Hashes: ${hashCount.toLocaleString()} | Blocks: ${blockCount}`);
   }, UPDATE_INTERVAL);
 
-  async function submitHash(previousHash: string, pseudonym: string, nonce: string) {
+  async function submitHash(block: Block) {
     const formData = new FormData();
-    formData.append("inputPreviousHash", previousHash.trim());
-    formData.append("inputMiner", pseudonym.trim());
-    formData.append("inputNonce", nonce.trim());
+    formData.append("inputPreviousHash", block.previous.trim());
+    formData.append("inputMiner", block.pseudonym.trim());
+    formData.append("inputNonce", block.nonce.trim());
     formData.append("submit-block", "Submit New Block");
 
     try {
@@ -185,31 +192,23 @@ if (!isMainThread) {
         credentials: "include",
       });
 
-
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
 
       const data = await response.text();
 
-      const message = data.match(/<h3>(.*?)<\/h3>/)?.[1]?.trim();
+      const message = data.match(/<h3>(.*?)<\/h3>/)?.entries()
 
-      if (message?.includes("Congratulations")) {
-
+      if (data?.includes("Congratulations")) {
         // Update the hash
-        lastBlock = {
-          difficulty: BigInt("0x" + lastBlock.hash).toString(2).padStart(256, "0"),
-          nonce,
-          hash: lastBlock.hash
-        }
-        update_log(`${previousHash}${pseudonym}${nonce}\n`);
-        workers.forEach((worker) => {
-          worker.postMessage({ type: "BLOCK-UPDATE", block: lastBlock });
-        });
-
-        return message;
+        lastBlock = block;
+        update_log(`${block.previous}${block.pseudonym}${block.nonce}`);
+        return Promise.all(workers.map((worker) => worker.postMessage({ type: "BLOCK-UPDATE", block })));
       } else {
-        throw new Error(`Block submission failed. (${message?.replace('Sorry, your block was not added to the chain.', '')})`);
+        // get the message containing sorry
+        const msg = message?.filter((m) => m.includes("Sorry"));
+        throw new Error(`Block submission failed. (${msg})`);
       }
     } catch (error) {
       console.error("Error submitting hash: ", error);
