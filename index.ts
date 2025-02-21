@@ -106,10 +106,16 @@ if (!isMainThread) {
         type: "number",
         description: "Interval in seconds to update the log",
         default: 60,
+      },
+      "continue": {
+        alias: "c",
+        type: "boolean",
+        description: "Continue from the last nonce, without overwriting the file",
+        default: false,
       }
     })
-    .usage("Usage: $0 [options]")
-    .example("$0 -p 'Alice' -d 20 -t 4", "Start mining with 4 threads and a difficulty of 20")
+    .usage("Usage: miner [options]")
+    .example("miner -p 'Alice' -d 20 -t 4", "Start mining with 4 threads and a difficulty of 20")
     .help()
     .parseSync();
 
@@ -118,11 +124,14 @@ if (!isMainThread) {
   const FILE_NAME = `miner-${argv.pseudonym}-submission.log`;
   const TOYCHAIN_URL = "https://www.cs.kent.ac.uk/people/staff/sb2213/toychain_comp6575_2425_a1/toy-chain.php"
 
-  // Wipe the file
-  writeFileSync(FILE_NAME, '');
-
   const update_log = (message: string) => {
     writeFileSync(FILE_NAME, message + '\n', { flag: 'a' });
+  }
+
+  // Wipe the file
+  if (!argv.continue) {
+    writeFileSync(FILE_NAME, ''); // Wipe the file
+    update_log(argv.pseudonym); // Push the initial pseudonym
   }
 
   const start = Date.now();
@@ -138,9 +147,6 @@ if (!isMainThread) {
   const workers: Worker[] = [];
   const startingDifficulty = lastBlock.difficulty + 1;
 
-  // Push the initial value to the file name
-  update_log(argv.pseudonym)
-
   console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}.\n`);
 
   for (let i = 0; i < THREAD_COUNT; i++) {
@@ -153,11 +159,11 @@ if (!isMainThread) {
       } as WorkerData,
     });
 
-    worker.on("message", async (data: { type: string, block: Block, count: number}) => {
+    worker.on("message", async (data: { type: string, block: Block, count: number }) => {
       if (data?.type === "INTERVAL-UPDATE") {
         hashCount += data.count;
       } else if (data?.type === "UPDATE") {
-        const block = data.block;        
+        const block = data.block;
         if (block.difficulty > lastBlock.difficulty) {
           await addBlock(block);
           blockCount++;
