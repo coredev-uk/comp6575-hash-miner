@@ -172,7 +172,7 @@ if (!isMainThread) {
 
   console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}. Using method: ${argv.method}.\n`);
 
-  for (let i = 1; i < THREAD_COUNT; i++) {
+  for (let i = 1; i <= THREAD_COUNT; i++) {
     let method = argv.method;
     if (argv.method === "combined") {
       method = Math.floor(THREAD_COUNT / 2) < i ? "random" : "sequential";
