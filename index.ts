@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import {
   isMainThread,
@@ -21,7 +21,7 @@ type Block = {
 }
 
 type WorkerData = {
-  id: number;
+  workerId: [number, number];
   pseudonym: string;
   difficulty: number;
   previous: string;
@@ -30,10 +30,10 @@ type WorkerData = {
 }
 
 function worker(data: WorkerData) {
-  const { pseudonym, updateInterval, method, id } = data;
+  const { pseudonym, updateInterval, method, workerId } = data;
   let bestDifficulty = workerData.difficulty;
   let previousHash = workerData.previous
-  let count = 1;
+  let iteration = 1;
   let lastUpdate = Date.now();
   const randNum = customAlphabet('1234567890')
 
@@ -51,7 +51,7 @@ function worker(data: WorkerData) {
     } else if (method === "random-number") {
       nonce = randNum();
     } else {
-      nonce = (count * id).toString();
+      nonce = workerId[0] + (iteration * workerId[1]).toString();
     }
 
     const raw = `${previousHash ?? ''}${pseudonym}${nonce}`;
@@ -76,11 +76,11 @@ function worker(data: WorkerData) {
 
     // Update every updateInterval milliseconds
     if (Date.now() - lastUpdate > (updateInterval * 0.95)) {
-      parentPort?.postMessage({ type: "INTERVAL-UPDATE", count });
+      parentPort?.postMessage({ type: "INTERVAL-UPDATE", count: iteration });
       lastUpdate = Date.now();
     }
 
-    count++;
+    iteration++;
   }
 }
 
@@ -121,15 +121,9 @@ if (!isMainThread) {
         description: "Interval in seconds to update the log",
         default: 60,
       },
-      "continue": {
-        alias: "c",
-        type: "boolean",
-        description: "Continue from the last nonce, without overwriting the file",
-        default: false,
-      },
       "method": {
         alias: "m",
-        choices: ["random", "sequential", "random-number"],
+        choices: ["random", "sequential", "random-number", "combined"],
         description: "The method to use for hashing",
         default: "random",
         
@@ -163,7 +157,7 @@ if (!isMainThread) {
   const startingDifficulty = lastBlock.difficulty + 1;
 
   // Wipe the file
-  if (!argv.continue) {
+  if (!existsSync(FILE_NAME)) {
     writeFileSync(FILE_NAME, ''); // Wipe the file
     update_log(argv.pseudonym); // Push the initial pseudonym
   } else {
@@ -179,16 +173,23 @@ if (!isMainThread) {
   console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}. Using method: ${argv.method}.\n`);
 
   for (let i = 1; i < THREAD_COUNT; i++) {
+    let method = argv.method;
+    if (argv.method === "combined") {
+      method = Math.floor(THREAD_COUNT / 2) < i ? "random" : "sequential";
+    }
+
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
-        id: i,
+        workerId: [i, THREAD_COUNT],
         previous: argv.hash,
         difficulty: (startingDifficulty),
         pseudonym: argv.pseudonym,
         updateInterval: UPDATE_INTERVAL,
-        method: argv.method
+        method,
       } as WorkerData,
     });
+
+    console.log(`Started worker ${i} with method ${method}.`);
 
     worker.on("message", async (data: { type: string, block: Block, count: number }) => {
       if (data?.type === "INTERVAL-UPDATE") {
