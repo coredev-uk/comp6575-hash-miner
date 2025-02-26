@@ -7,7 +7,7 @@ import {
   workerData,
 } from "node:worker_threads";
 import process from "node:process";
-import { nanoid } from 'nanoid'
+import { nanoid, customAlphabet } from 'nanoid'
 import { formatDistanceToNowStrict } from "date-fns";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -21,18 +21,21 @@ type Block = {
 }
 
 type WorkerData = {
+  id: number;
   pseudonym: string;
   difficulty: number;
   previous: string;
   updateInterval: number;
+  method: 'random' | 'sequential' | 'random-number';
 }
 
 function worker(data: WorkerData) {
-  const { pseudonym, updateInterval } = data;
+  const { pseudonym, updateInterval, method, id } = data;
   let bestDifficulty = workerData.difficulty;
   let previousHash = workerData.previous
-  let count = 0;
+  let count = 1;
   let lastUpdate = Date.now();
+  const randNum = customAlphabet('1234567890', 12)
 
   parentPort?.on("HASH-UPDATE", (data) => {
     previousHash = data.hash;
@@ -40,7 +43,18 @@ function worker(data: WorkerData) {
   });
 
   while (true) {
-    const nonce = nanoid();
+    // Handle the different methods
+    let nonce: string;
+
+    if (method === "random") {
+      nonce = nanoid();
+    } else if (method === "random-number") {
+      nonce = randNum();
+    } else {
+      nonce = (count * id).toString();
+    }
+
+
     const raw = `${previousHash ?? ''}${pseudonym}${nonce}`;
     const sha = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
     const bin = BigInt("0x" + sha).toString(2).padStart(256, "0");
@@ -112,6 +126,12 @@ if (!isMainThread) {
         type: "boolean",
         description: "Continue from the last nonce, without overwriting the file",
         default: false,
+      },
+      "method": {
+        alias: "m",
+        options: ["random", "sequential", "random-number"],
+        description: "The method to use for hashing",
+        default: "random"
       }
     })
     .usage("Usage: miner [options]")
@@ -147,15 +167,17 @@ if (!isMainThread) {
   const workers: Worker[] = [];
   const startingDifficulty = lastBlock.difficulty + 1;
 
-  console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}.\n`);
+  console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}. Using method: ${argv.method}.\n`);
 
   for (let i = 0; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
+        id: i,
         previous: argv.hash,
         difficulty: (startingDifficulty),
         pseudonym: argv.pseudonym,
         updateInterval: UPDATE_INTERVAL,
+        method: argv.method
       } as WorkerData,
     });
 
