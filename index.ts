@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import {
   isMainThread,
@@ -35,7 +35,7 @@ function worker(data: WorkerData) {
   let previousHash = workerData.previous
   let count = 1;
   let lastUpdate = Date.now();
-  const randNum = customAlphabet('1234567890', 12)
+  const randNum = customAlphabet('1234567890')
 
   parentPort?.on("HASH-UPDATE", (data) => {
     previousHash = data.hash;
@@ -53,7 +53,6 @@ function worker(data: WorkerData) {
     } else {
       nonce = (count * id).toString();
     }
-
 
     const raw = `${previousHash ?? ''}${pseudonym}${nonce}`;
     const sha = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
@@ -89,6 +88,7 @@ if (!isMainThread) {
   worker(workerData);
 } else {
   const argv = yargs(hideBin(process.argv))
+    .strict()
     .options({
       "pseudonym": {
         alias: "p",
@@ -129,9 +129,10 @@ if (!isMainThread) {
       },
       "method": {
         alias: "m",
-        options: ["random", "sequential", "random-number"],
+        choices: ["random", "sequential", "random-number"],
         description: "The method to use for hashing",
-        default: "random"
+        default: "random",
+        
       }
     })
     .usage("Usage: miner [options]")
@@ -148,12 +149,6 @@ if (!isMainThread) {
     writeFileSync(FILE_NAME, message + '\n', { flag: 'a' });
   }
 
-  // Wipe the file
-  if (!argv.continue) {
-    writeFileSync(FILE_NAME, ''); // Wipe the file
-    update_log(argv.pseudonym); // Push the initial pseudonym
-  }
-
   const start = Date.now();
   let hashCount = 0;
   let blockCount = 0;
@@ -167,9 +162,23 @@ if (!isMainThread) {
   const workers: Worker[] = [];
   const startingDifficulty = lastBlock.difficulty + 1;
 
+  // Wipe the file
+  if (!argv.continue) {
+    writeFileSync(FILE_NAME, ''); // Wipe the file
+    update_log(argv.pseudonym); // Push the initial pseudonym
+  } else {
+    const data = readFileSync(FILE_NAME, 'utf-8').split('\n').filter((line) => line.trim() !== '');
+    // Get the line count and minus 1
+    const lastLine = data[data.length - 1];
+    const lastNonce = lastLine.split(argv.pseudonym)[1];
+    lastBlock.nonce = lastNonce;
+    lastBlock.previous = data[data.length - 2];
+    blockCount = data.length - 1;
+  }
+
   console.log(`Starting miner with ${THREAD_COUNT} threads and a difficulty of ${startingDifficulty}. Using method: ${argv.method}.\n`);
 
-  for (let i = 0; i < THREAD_COUNT; i++) {
+  for (let i = 1; i < THREAD_COUNT; i++) {
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
         id: i,
