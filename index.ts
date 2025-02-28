@@ -180,7 +180,7 @@ if (!isMainThread) {
 
     const worker = new Worker(new URL(import.meta.url), {
       workerData: {
-        workerId: [i, THREAD_COUNT],
+        workerId: [i, Math.floor(THREAD_COUNT / 2)],
         previous: argv.hash,
         difficulty: (startingDifficulty),
         pseudonym: argv.pseudonym,
