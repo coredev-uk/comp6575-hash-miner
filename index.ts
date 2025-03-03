@@ -29,6 +29,15 @@ type WorkerData = {
   method: 'random' | 'sequential' | 'random-number';
 }
 
+function getDifficulty(sha: string) {
+  return BigInt("0x" + sha).toString(2).padStart(256, "0").indexOf("1")
+}
+
+function computeSha256(raw: string) {
+  return new Bun.CryptoHasher("sha256").update(raw).digest("hex");
+  // return require('crypto').createHash('sha256').update(raw).digest('hex'); // Alternate method using node.js
+}
+
 function worker(data: WorkerData) {
   const { pseudonym, updateInterval, method, workerId } = data;
   let bestDifficulty = workerData.difficulty;
@@ -55,9 +64,8 @@ function worker(data: WorkerData) {
     }
 
     const raw = `${previousHash ?? ''}${pseudonym}${nonce}`;
-    const sha = new Bun.CryptoHasher("sha256").update(raw).digest("hex");
-    const bin = BigInt("0x" + sha).toString(2).padStart(256, "0");
-    const difficulty = bin.indexOf("1")
+    const sha = computeSha256(raw);
+    const difficulty = getDifficulty(sha);
 
     if (difficulty > bestDifficulty) {
       parentPort?.postMessage({
@@ -100,7 +108,6 @@ if (!isMainThread) {
         alias: "h",
         type: "string",
         description: "The previous hash value",
-        default: null,
         demandOption: true
       },
       "threads": {
@@ -126,11 +133,11 @@ if (!isMainThread) {
         choices: ["random", "sequential", "random-number", "combined"],
         description: "The method to use for hashing",
         default: "random",
-        
+
       }
     })
     .usage("Usage: miner [options]")
-    .example("miner -p 'Alice' -d 20 -t 4", "Start mining with 4 threads and a difficulty of 20")
+    .example("miner -p 'Bob' -h 'PREVIOUS_HASH' -t 4 -d 10", "Start the miner with 4 threads and a max difficulty of 10 with random method.")
     .help()
     .parseSync();
 
@@ -148,7 +155,7 @@ if (!isMainThread) {
   let blockCount = 0;
   let lastBlock = {
     previous: null as string | null,
-    difficulty: BigInt("0x" + argv.hash).toString(2).padStart(256, "0").indexOf("1"),
+    difficulty: getDifficulty(argv.hash),
     nonce: "",
     sha256: argv.hash,
     pseudonym: argv.pseudonym
@@ -162,7 +169,6 @@ if (!isMainThread) {
     update_log(argv.pseudonym); // Push the initial pseudonym
   } else {
     const data = readFileSync(FILE_NAME, 'utf-8').split('\n').filter((line) => line.trim() !== '');
-    // Get the line count and minus 1
     const lastLine = data[data.length - 1];
     const lastNonce = lastLine.split(argv.pseudonym)[1];
     lastBlock.nonce = lastNonce;
