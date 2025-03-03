@@ -27,12 +27,12 @@ Once a valid hash has been found, the script will attempt to make a POST request
 To run the script, you will need to have the `bun` runtime installed. This can be installed using the instructions on the [bun website](https://bun.sh/). Once installed, you can run the script using the following command:
 ```bash
 bun install
-bun run index.ts --pseudonym PSEUDONYM --threads THREADS
+bun run src/index.ts --pseudonym PSEUDONYM --threads THREADS
 ```
 
 For a complete list of options, you can run the following command:
 ```bash
-bun run index.ts --help
+bun run src/index.ts --help
 ```
 
 

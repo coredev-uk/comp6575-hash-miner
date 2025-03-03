@@ -3,8 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "scripts": {
-    "build": "bun build --compile --minify --sourcemaps --target=bun-linux-x64-baseline ./index.ts --outfile bin/miner-linux-x64",
-    "test": "bun run index.ts -p 'lunar' -h '0000000003ef3cc4069180f7bce80583980796adeb88b7d3b24c07fde251e4a4' -u 10"
+    "build": "bun build --compile --minify --sourcemaps --target=bun-linux-x64-baseline ./src/index.ts --outfile bin/miner-linux-x64",
+    "test": "bun run src/index.ts -p 'lunar' -h '0000000003ef3cc4069180f7bce80583980796adeb88b7d3b24c07fde251e4a4' -u 10"
   },
   "devDependencies": {
     "@types/bun": "latest",
